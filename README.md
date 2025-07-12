@@ -24,10 +24,10 @@ The `guacamole.yaml` file contains all the necessary Kubernetes resources to dep
 * `Job`: To initialize the Guacamole database schema in PostgreSQL.
 * `Ingress`: To expose the Guacamole web interface externally using `nginx.ingress.kubernetes.io` annotations for rewrite rules, SSL redirection, and session affinity.
 
-### Steps to Deploy:
+### Steps to Deploy
 
 1. **Review and Adjust `guacamole.yaml`:**
-    * **TLS Secret:** The `cloudflare-tls` secret in the `guacamole.yaml` contains base64 encoded `tls.crt` and `tls.key`. **You MUST replace these with your own TLS certificate and key for your domain.**
+    * **TLS Secret:** The `guacamole-tls` secret in the `guacamole.yaml` contains base64 encoded `tls.crt` and `tls.key`. **You MUST replace these with your own TLS certificate and key for your domain.**
         * To generate base64 encoded values:
 
             ```bash
