@@ -1,0 +1,422 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: guacamole
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgresql-secret
+  namespace: guacamole
+type: Opaque
+data:
+  postgresql-password: Z3VhY2Ftb2xlCg==
+
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgresql-pv
+spec:
+  capacity:
+    storage: 1G
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgresql-pvc
+  namespace: guacamole
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: manual
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+  namespace: guacamole
+  labels:
+    app: guacamole-postgresql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+        - name: postgresql
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          env:
+            - name: PGDATA
+              value: /pgdata
+            - name: POSTGRES_DB
+              value: guacamole
+            - name: POSTGRES_USER
+              value: guacamole
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: postgresql-password
+          volumeMounts:
+            - name: postgresql-data
+              mountPath: /pgdata
+      volumes:
+        - name: postgresql-data
+          persistentVolumeClaim:
+            claimName: postgresql-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: guacamole
+  labels:
+    app: guacamole-postgresql
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgresql
+  selector:
+    app: postgresql
+  type: ClusterIP
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guacamole-init-db
+  namespace: guacamole
+spec:
+  template:
+    metadata:
+      name: guacamole-init-db
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: init-script-volume
+          emptyDir: {}
+      initContainers:
+        - name: wait-for-postgresql
+          image: busybox
+          command:
+            [
+              "sh",
+              "-c",
+              "until nc -z postgresql.guacamole.svc.cluster.local 5432; do echo waiting for postgresql; sleep 2; done;",
+            ]
+        - name: generate-guacamole-schema
+          image: guacamole/guacamole:1.6.0
+          command: ["sh", "-c"]
+          args:
+            - "/opt/guacamole/bin/initdb.sh --postgresql > /init-scripts/initdb.sql"
+          volumeMounts:
+            - name: init-script-volume
+              mountPath: /init-scripts
+      containers:
+        - name: apply-guacamole-schema
+          image: postgres:16
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: postgresql-password
+            - name: PGHOST
+              value: postgresql.guacamole.svc.cluster.local
+            - name: PGDATABASE
+              value: guacamole
+            - name: PGUSER
+              value: guacamole
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eux;
+              echo "Checking if Guacamole schema already exists...";
+              if psql -h ${PGHOST} -p 5432 -U ${PGUSER} -d ${PGDATABASE} -tAc "SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'guacamole_user';" | grep -q 1; then
+                echo "Guacamole schema (guacamole_user table) already exists. Skipping schema application.";
+                exit 0;
+              else
+                echo "Guacamole schema not found. Applying generated script...";
+                psql -h ${PGHOST} -p 5432 -U ${PGUSER} -d ${PGDATABASE} -f /init-scripts/initdb.sql;
+                echo "Guacamole schema applied successfully.";
+              fi
+          volumeMounts:
+            - name: init-script-volume
+              mountPath: /init-scripts
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guacd
+  namespace: guacamole
+  labels:
+    app: guacamole-guacd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guacd
+  template:
+    metadata:
+      labels:
+        app: guacd
+    spec:
+      containers:
+        - name: guacd
+          image: guacamole/guacd:1.6.0
+          ports:
+            - containerPort: 4822
+              name: guacd-port
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guacd
+  namespace: guacamole
+  labels:
+    app: guacamole-guacd
+spec:
+  ports:
+    - port: 4822
+      targetPort: 4822
+      protocol: TCP
+      name: guacd-port
+  selector:
+    app: guacd
+  type: ClusterIP
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guacamole-client
+  namespace: guacamole
+  labels:
+    app: guacamole-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: guacamole-client
+  template:
+    metadata:
+      labels:
+        app: guacamole-client
+    spec:
+      initContainers:
+        - name: wait-for-guacd
+          image: busybox
+          command:
+            [
+              "sh",
+              "-c",
+              "until nc -z guacd.guacamole.svc.cluster.local 4822; do echo waiting for guacd; sleep 2; done;",
+            ]
+      containers:
+        - name: guacamole
+          image: guacamole/guacamole:1.6.0
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: REMOTE_IP_VALVE_ENABLED
+              value: "true"
+            - name: GUACD_HOSTNAME
+              value: guacd.guacamole.svc.cluster.local
+            - name: GUACD_PORT
+              value: "4822"
+            - name: POSTGRESQL_HOSTNAME
+              value: postgresql.guacamole.svc.cluster.local
+            - name: POSTGRESQL_PORT
+              value: "5432"
+            - name: POSTGRESQL_DATABASE
+              value: guacamole
+            - name: POSTGRESQL_USER
+              value: guacamole
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: postgresql-password
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guacamole
+  namespace: guacamole
+  labels:
+    app: guacamole-client
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: guacamole-client
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: guacamole-tls
+  namespace: guacamole
+type: kubernetes.io/tls
+data:
+  tls.crt: |
+    LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUZXekNDQTBPZ0F3SUJBZ0lVUTA5ckZFc0Yr
+    RVRnRHVhV2VUTDN6TDZ3NEFBd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0xqRWFNQmdHQTFVRUF3d1Ja
+    M1ZoWTJGdGIyeGxMbXM0Y3k1c1lXSXhFREFPQmdOVkJBb01CMnM0Y3k1cwpZV0l3SGhjTk1qVXdO
+    ekV5TWpBeE5EQXlXaGNOTWpZd056RXlNakF4TkRBeVdqQXVNUm93R0FZRFZRUUREQkZuCmRXRmpZ
+    VzF2YkdVdWF6aHpMbXhoWWpFUU1BNEdBMVVFQ2d3SGF6aHpMbXhoWWpDQ0FpSXdEUVlKS29aSWh2
+    Y04KQVFFQkJRQURnZ0lQQURDQ0Fnb0NnZ0lCQUxCNjhZbHVWU282VHVQak83RW9tV2NRUXRLcWs0
+    TXN3ZkNHbzlwcgpuYXhmam5NTWxXeTB6MldERUUxV2pzMWhzdmU0dHhheVZZTkFMQzh5RTE0TUNK
+    bXYvcFJvb0dTVWh5VDYydGcvCmVuTVo3QlA5TEtSaE1BSE1oZlJkN1NsU3RMRkt0ZlpEUVM1dzlJ
+    MGhwT3RIcFh5TUJEcjV0eHlZUUR6TnRyU0oKSER6U0xYWXR6V3luaWg2NUlKTHJhR01HMjVveExQ
+    TmJ6WTJzQmRER09BUWhWRWZkVlNjbEJ0YXhTREVXU1VqZwpaUU1qT0d6YkM0QUh1aWpSRktXaVcz
+    L1R5cmlJY2doYStNUlVsOWkzOVpmd3hjNXg5bG5oTUIveUtQSFlhek1HCnlyR1RrYkZsWHYwUWkx
+    TUpPdzU5azhheGdsWnJ5QnJ2YzlxYzNuM05IdnVrQlZjMEFVV0pVM2MrVVFVWFN3S0EKMVNKUzJZ
+    N25CYTF5dTdWc1ZKQ3NiNTRWYVBEbHlXUHRmSTcrc0dXRHFLNHpydlpwRzlsdERSSnNTY0VKR2RX
+    SQpnMmkwVXAyeE5lU3Qyby9ZamRxcmNvT0t3allMNHhzTnE5Uy9ONkRwL0h0Q1gzZEZCV3pnQUJZ
+    TjNRWStpdUVoCk5mVk41TjVvaENHckNrbGVyTC85amlmOWhnaVRaMHpwM29yNnNmWG1JZzA2a0I1
+    enJYS3REb1h2UGlRVEd5YkgKelJ1ejBrcjVidjZrTkRZUVNDRS8zNVZRdVRFcThhdTdaVitzOFlJ
+    VSthODFMZEpjMVJNS3FnYU9hcnNWVXZ4dwovOGlnMitmdWwxMzVOTFJBK1ExNTV4SVJBOUpFQWFR
+    elpNSGMrc3pqUVpYTmFDelF0SmxCd3B1dENEdCtWUWlvCllkWEZBZ01CQUFHamNUQnZNQjBHQTFV
+    ZERnUVdCQlRKTE8ra1J5R1RLYmNHdVVUbEIxbnVldnJZcFRBZkJnTlYKSFNNRUdEQVdnQlRKTE8r
+    a1J5R1RLYmNHdVVUbEIxbnVldnJZcFRBUEJnTlZIUk1CQWY4RUJUQURBUUgvTUJ3RwpBMVVkRVFR
+    Vk1CT0NFV2QxWVdOaGJXOXNaUzVyT0hNdWJHRmlNQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUNBUUNt
+    CkZBQWljWkhIR24velowOWtpbjN0UUk1bUpRQnNYMmlrRjFlUC9pN0VNNGNBR1ZuaWlTckFJWnBD
+    d2xUOStlVHYKalY0OHRHM25HMFd2dlBHdjdVZ205MVBtbE1DVU91Zzg4a3A5Snh0bGFibGhwME0z
+    U1crS2Q0K3ZGczJaenpRZwpUNUdZS3JRTVJUWEpHYjVITGR6bFBxRmcwVlY2YkxiWU9MVVJGQnRG
+    VGhpVnNSM1RraXAyYVJuK0F5cnJseGJ2CmZUU1RNMHRrZ29ybzZ0R21JL3lHeTdxTk0vd2c2VWtW
+    UjVzRTZ3YmhnOUJhRWFwcXRrTVAyTUM5NkxLb3BzM3gKZ0pZNlVUVzBJcENnNStNRWtndFJkRjRq
+    L1RERkhySWFQczc2bWF5VlpRRFVya044WWt2dCtmRFdvMHVvOWZweAo3SWYzT3plb0hOWGs3RVFl
+    Yk5kTUwyNDBZZms1OTBTM3BKYW9nKzhKWlU4WDB6aEYrNDdSOWFSSGx2eEE1cktoCmJsM3d2OTJz
+    amJNckVJOWovMjJDdXNuOHlmeHlIMjlsZHhIQmZ0bkhTVGptVm1CN0xPcjhGQmpzV3lncE5CUDkK
+    UFNXVXVHZnkra3dWZXpxREVidElJelFwTWl2dGJDU282UEVMZEt5VjVGc3EyVkZNRlc1TTFLV2VF
+    UzZpa0VrSAphSHpzV2d1QTNlNkhTajRqcG9KSG80ekRMRldGYURJbTJCODRpTE95V1lyU1lUNnZn
+    dEtvblg2N1dCdzRscWh2Ck9GeEVwdW96M3B3MWJNUVNPamFlZ2ZqdWRhdWhFZ3pVRHZyWFRjZEFH
+    OFpMeElCSlpxRTBSS0dTdG8zUHZGVnEKa05Cd0lCNjN2NDBiZWVaRTEyNWI1cnhBZHZoZjBYcE1q
+    Y0pwNjlCZTRnPT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+  tls.key: |
+    LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUpRd0lCQURBTkJna3Foa2lHOXcwQkFRRUZB
+    QVNDQ1Mwd2dna3BBZ0VBQW9JQ0FRQ3dldkdKYmxVcU9rN2oKNHp1eEtKbG5FRUxTcXBPRExNSHdo
+    cVBhYTUyc1g0NXpESlZzdE05bGd4Qk5WbzdOWWJMM3VMY1dzbFdEUUN3dgpNaE5lREFpWnIvNlVh
+    S0JrbEljayt0cllQM3B6R2V3VC9TeWtZVEFCeklYMFhlMHBVclN4U3JYMlEwRXVjUFNOCklhVHJS
+    NlY4akFRNitiY2NtRUE4emJhMGlSdzgwaTEyTGMxc3A0b2V1U0NTNjJoakJ0dWFNU3p6VzgyTnJB
+    WFEKeGpnRUlWUkgzVlVuSlFiV3NVZ3hGa2xJNEdVREl6aHMyd3VBQjdvbzBSU2xvbHQvMDhxNGlI
+    SUlXdmpFVkpmWQp0L1dYOE1YT2NmWlo0VEFmOGlqeDJHc3pCc3F4azVHeFpWNzlFSXRUQ1RzT2Za
+    UEdzWUpXYThnYTczUGFuTjU5CnpSNzdwQVZYTkFGRmlWTjNQbEVGRjBzQ2dOVWlVdG1PNXdXdGNy
+    dTFiRlNRckcrZUZXanc1Y2xqN1h5Ty9yQmwKZzZpdU02NzJhUnZaYlEwU2JFbkJDUm5WaUlOb3RG
+    S2RzVFhrcmRxUDJJM2FxM0tEaXNJMkMrTWJEYXZVdnplZwo2Zng3UWw5M1JRVnM0QUFXRGQwR1Bv
+    cmhJVFgxVGVUZWFJUWhxd3BKWHF5Ly9ZNG4vWVlJazJkTTZkNksrckgxCjVpSU5PcEFlYzYxeXJR
+    NkY3ejRrRXhzbXg4MGJzOUpLK1c3K3BEUTJFRWdoUDkrVlVMa3hLdkdydTJWZnJQR0MKRlBtdk5T
+    M1NYTlVUQ3FvR2ptcTdGVkw4Y1AvSW9Odm43cGRkK1RTMFFQa05lZWNTRVFQU1JBR2tNMlRCM1By
+    TQo0MEdWeldnczBMU1pRY0ticlFnN2ZsVUlxR0hWeFFJREFRQUJBb0lDQURVczVraDFzVDJuRWd4
+    Q2RNTDlxN05OClNBVTRGbmlJN09ydmRzR2llWUR0emZ0R2lHT1gyNElIeXNxeTBSWjdZTFNadUxr
+    akJQY21SK24wbWJkVnd1V2sKRFA1a3hDZHFSWXBUOThyKzNZTi9CUTVFMDhXMzd3SXJ3UlVQbEIx
+    R2FXR2VWRk9la2k1UEpMQzl1WGFYUVByVgpLWlVubHhBTHBCZHVHS1l2UmczaGVvZElaOFJjZXhh
+    a3kzYlpiYnVnM2x5SWdyWFZMSXVLa0xvR2IreDJxbkY0CjlHWjJGcWhzQkllZDRua04vQUhGQkFS
+    d3YvZFUzTGZkdisza2pOTm9Xb1hkdnhaYmF1ZWxZWmVRWG5Ub3ZJRm0KLzBhM3ZvdHhxUHF1TGli
+    UzNoSkJsNzJ2QUw4WjFCRXlEOVJlN0Q4TFQyMkF6bXVuU081UEpBOGQxajhXZmZEMgpxNWV3NEtF
+    eTFoVzA3NEp2VVo0Yy9GM2xIdWRUeDE3ZFdBdXlrT24rZjdScmRWeU1Nd2hSNTMzOUNyNTdRUjc4
+    CnZRZG5KR29yckNYb2pLNWlHdjJ3VDh0U25XUjBaek1ZcWpFcVR3eXFhMTZJWGxWQ3pWT0hPVjV4
+    bHdzRE80cmoKNnp0NzhIdmk2RmpuUU5iK2gxSHVyMWl2SThPUzA3c2tyN1FtL2t5anpzdEloM21L
+    Y3QvRis0ZTZJZXM5bWp4egpuZmJuU0RXMmR3elZTUTFDU0pKczZrdS9WM2VaVSt5a0cwUFNPV3BL
+    UERFOVQzRkFUL0tSbEREZTZjcGVIQVRRCnNMMmptWTRJQVVHSzJOT0Z5UmdNbHNKRjdDZHY0bnYv
+    dnNobTdaRHRxNE91aEVQMm12em9CWmhsNW93M09sQy8KdTc2dDdnR0Nxemt0QTl1QXduL0ZBb0lC
+    QVFEdXJmRkNKc2xzOWhEMGlvbUxGV3pZTXZxWFlFZzVmSkdvajRxcApSaWVBUzdWcFFGRWNWZ0RG
+    UFNsakorYTB4WXpDUU9xNitMVnZpY3dwRjl0VUxxUThad254T0RRQWJLN2FHa01rCk1ZckIvZFAw
+    L1VZeVN4SW9QblZJWTF4OFY3WDVyL3JBeTBKbE9FbDBpZThrSUVPMERWN3h6N0JUbXkydURIZlkK
+    RmVKeXVENVFWZGpybzRkRDYwSWxlZHp1S2FEV2c4U2QwWk93c0dva1E4eXFpYll3dis1ZjBoTVJR
+    RUN5TmxTOAp5QTM1b29hT2JCTjFnajdVVDErQXFvY1NaY3NxSnVhbGhDamdPTWtzY1ZoRFdOTE5L
+    Z1RMRUNQbUJmNkRTcE1UCm42Z2hFMkxVRUJPVmZzNXhvZzhEWnRvRDRvVHR4bXJUbSsxbmkwU3Rk
+    ekFUejhrbkFvSUJBUUM5U1g5eEtTYmIKU0ROZnRLdWpjSldEMlZKcitacU1kQmJiTmE0WWQ0TWRB
+    Ylg3SzZyMzF6STdsQ09Ob3kzT3Y4dU94SlNsUDErcgpjdEF3MjBTSzhFL252Y3NGN0NZaVJ6YTZB
+    c2dMeTM0UG5Xbjg2QjR4U0dJdXJlZmh4c3dwMVRoRmx0Rm5zRDhNCkk1NVhnazlNZFk1MzdLTXNW
+    bXNwdTJPQlMrb0xicWc1QlhnaGdlMkV3S1Q4NkU4QU1yZVNLcGlvb1d2dFQxRDUKK2ljOXMrTndB
+    NzlCWXdQZHY3cXowcWVFclhJT1VuZ2pVU3F6dnBjWXNURkthK05NL0ZiU0RLKzRnQjc4WlhXSQpq
+    cERMaWdOTTJUbExzUzBRU0x4WmdBd3JQanZrRWFxOXYvVlhpOHFVbW91dWFuVkJ0UldvRVc4VDNQ
+    Smw4dStNCm8xT2I2OVBUMlFVekFvSUJBRS83eGwrT3MrMXB3R0RTbENraHN1bjRtM1ZpOUpFZko0
+    aS9JWTU4VGZ4MllvSzAKNVBtRDhKb29WdGc5cE5ocll6SXRvdnVwSU5RUjczTE41ZGdlRVRlVXFB
+    WkgrVlV6RnAxTU03ZkxTbDZiK3cyYwpXb3U4RUllZjlwbWRnbjdBdmVEQWtsMU5RQ0MvYmc0NXN3
+    UCtNL0lBa1JLanNNa3p0V2tnRUlFL1JEV0JmSkJiClZHZ1MwdDkxMVNMTjViV0NDYjRaUmloRTlT
+    TSsyekx2N1lRd3hmY3NPbXV0OEduVmlGaXdVRkU3RVVQWXJSTEoKTVBRdUEzUU9iVWltM01EVGov
+    TytPWWk1OHlEQXB0blgyZVludSt5NDZnWktrRjBqSVJsS1FtTlBHMzZLQ3BKYQpHTlgrT3B4bDNI
+    WWRYMjN4Mk8zOWtncjdzK0VCRUxDNHdrbkJWZjBDZ2dFQkFLR3RwNmRXaVJRQUJiR1h0b3R4CjNL
+    T3orc3l6ZEtqSGQ4WmhnWVR3Z0JORXBOWVhKSDl4Vmp6QmVlUy9IcDliLzFqQTNGNlJWUHd5bzFV
+    MzFNSUEKSmFCQjRxbjZYVkFtRjc2bUpZeTlrYjF3clZrU1FzZkJsZXRkSzVVVG9zdVFqZklTc21h
+    b2loR3FVdE5ZUUxlRQpLZDZSUjRiVmdjOHhlZnEwaHdLZzBCdDBhbm5rYXFaYmpoRmZ0Q3J0SnhN
+    NFF4QzJZR05ndmovbXhhSFVoMDNrClJYWnFScUVmNVM4M25WS2NlN0YwQzUzTzlIUjNOTVFvaFh1
+    Vno1NndZdEFqZWV4VHN5UE8zYWQ0Ym9FTUwybHkKbVpmbmpDQStvSEtxQnJyZyszTUJEQi9yV0hv
+    Z3N6WmZFelExUmxhTGdDWUFUaXBmTE1TYnpyVUh4S0NIdkhWVgpCelVDZ2dFQkFPMDV3QlJ3RWo1
+    OVI4UmtZN0hBTXdFeWRSY296ZVJrVmZ0blJKWWkreHY5TmJEQm4zaUxYSXpzCk1oc2l4YmdBOUps
+    dXdScXNSNlZZalNVaXBEUU5OK1JXOUYzSlBYZG9LcTlxcWZUY2dXNHBQRE9KeWF4RTdRWEgKUHhK
+    TDZlNndJRVZPRVhqMUhlcDFoeENhemxtVWt5NjVUa0xFMU8wdzh2TFAyV2tTV0pKZUwySlRucVBC
+    YmJIMwpGaHBoTWJ1SHlFSDJ5dmN5SVBPcnE2Ujd6ZXh6N2p3cCsxQldYYXVaeEw4WXgrZzhRZHVr
+    clE0VTNZM0tFczYvClo5Yng4elVNbkRzY040RlNTSldLajRwSzhxSFBKYkcydkQ5SXhib1BVaWFv
+    QUZVY1JSVDdLRXpNVW9UWjB0dWYKT1pBSnQwQmRVbTdiN2pVS1RPb0VCclJFaUxkSExWTT0KLS0t
+    LS1FTkQgUFJJVkFURSBLRVktLS0tLQo=
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: guacamole-ingress
+  namespace: guacamole
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /guacamole/$1
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1g"
+    nginx.ingress.kubernetes.io/enable-access-log: "false"
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "route"
+    nginx.ingress.kubernetes.io/session-cookie-expires: "3600"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "3600"
+    nginx.ingress.kubernetes.io/session-cookie-path: "/"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - guacamole.k8s.lab
+      secretName: guacamole-tls
+  rules:
+    - host: guacamole.k8s.lab
+      http:
+        paths:
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: guacamole
+                port:
+                  number: 8080
