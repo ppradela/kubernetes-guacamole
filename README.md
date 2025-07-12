@@ -1,6 +1,6 @@
 # [Apache Guacamole](https://guacamole.apache.org/) Kubernetes Deployment
 
-This repository contains Kubernetes manifests to deploy Apache Guacamole, a clientless remote desktop gateway, into your Kubernetes cluster.
+This repository contains Kubernetes manifests to deploy Apache Guacamole into your Kubernetes cluster.
 
 ## Prerequisites
 
