@@ -35,9 +35,11 @@ The `guacamole.yaml` file contains all the necessary Kubernetes resources to dep
             cat your_domain.key | base64 --wrap=0
             ```
 
-        * Update the `data` section of the `cloudflare-tls` secret with your generated base64 strings.
+        * Update the `data` section of the `guacamole-tls` secret with your generated base64 strings.
     * **Ingress Host:** Update `guacamole.k8s.lab` in the `Ingress` resource to your desired hostname.
     * **PostgreSQL Password:** The `postgresql-secret` contains a base64 encoded password (`Z3VhY2Ftb2xlCg==` which decodes to `guacamole`). You can change this to a stronger password by base64 encoding your new password.
+    * **PostgreSQL Data Directory:** The `postgresql-pv` points to `hostPath`. Adjust it to your environment. For multi-Nodes cluster use shared storage.
+
 2. **Apply the Manifest:**
 
     ```bash

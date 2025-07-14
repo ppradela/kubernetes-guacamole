@@ -26,6 +26,8 @@ spec:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   storageClassName: manual
+  hostPath:
+    path: /path/to/pgdata
 
 ---
 apiVersion: v1
