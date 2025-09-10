@@ -1,73 +1,93 @@
-# [Apache Guacamole](https://guacamole.apache.org/) Kubernetes Deployment
+# 🥑 Apache Guacamole on Kubernetes
 
-This repository contains Kubernetes manifests to deploy Apache Guacamole into your Kubernetes cluster.
+This guide provides step-by-step instructions to deploy **[Apache Guacamole](https://guacamole.apache.org/)** in a Kubernetes cluster.
 
-## Prerequisites
+---
 
-Before deploying Guacamole, ensure the following components are installed and configured in your Kubernetes cluster:
+## 📑 Table of Contents
+1. [Introduction](#-introduction)  
+2. [Prerequisites](#-prerequisites)  
+3. [Deployment](#-deployment)  
+4. [Accessing Guacamole](#-accessing-guacamole)  
+5. [Customization](#-customization)  
+6. [Author](#-author)
 
-* **MetalLB:** A bare metal load-balancer for Kubernetes, essential for exposing services externally if you are not using a cloud provider with native LoadBalancer support.
-  * [MetalLB Installation Guide](https://metallb.io/installation/)
-* **Ingress-Nginx Controller:** An Ingress controller that uses NGINX as a reverse proxy and load balancer. This is used to expose the Guacamole web interface via an Ingress resource.
-  * [Ingress-Nginx Installation Guide](        https://kubernetes.github.io/ingress-nginx/deploy/)
-* **Persistent Volume Provisioner:** Ensure you have a storage class and a persistent volume provisioner configured that can satisfy `ReadWriteOnce` access mode for the PostgreSQL database. The provided `guacamole.yaml` uses `storageClassName: manual`, implying you might need to manually provision the `postgresql-pv` or adjust the `PersistentVolumeClaim` to use an existing storage class in your environment.
+---
 
-## Deployment
+## 📝 Introduction
+This repository contains Kubernetes manifests to deploy Apache Guacamole into your Kubernetes cluster. The deployment includes PostgreSQL, Guacamole Daemon (`guacd`), and the Guacamole client (web application).
 
-The `guacamole.yaml` file contains all the necessary Kubernetes resources to deploy Apache Guacamole, including:
+---
 
-* `Namespace`: `guacamole`
-* `Secret`: For PostgreSQL database password and TLS certificates for Ingress.
-* `PersistentVolume` and `PersistentVolumeClaim`: For PostgreSQL data persistence.
-* `Deployment`: For PostgreSQL, `guacd` (Guacamole daemon), and `guacamole-client` (web application).
-* `Service`: For PostgreSQL, `guacd`, and `guacamole-client` to enable internal communication.
-* `Job`: To initialize the Guacamole database schema in PostgreSQL.
-* `Ingress`: To expose the Guacamole web interface externally using `nginx.ingress.kubernetes.io` annotations for rewrite rules, SSL redirection, and session affinity.
+## ⚙️ Prerequisites
+Before deploying Guacamole, make sure your cluster has:
+
+- **MetalLB:** A bare-metal load balancer for Kubernetes (required if not using a cloud provider).
+  - [MetalLB Installation Guide](https://metallb.io/installation/)
+- **Ingress-Nginx Controller:** Used to expose the Guacamole web interface.
+  - [Ingress-Nginx Installation Guide](https://kubernetes.github.io/ingress-nginx/deploy/)
+- **Persistent Volume Provisioner:** Ensure a `ReadWriteOnce` compatible provisioner is configured. The provided manifests use `storageClassName: manual`.
+
+---
+
+## 🚀 Deployment
+The file `guacamole.yaml` contains all resources:
+- `Namespace`: `guacamole`
+- `Secrets`: PostgreSQL password & TLS certificates for Ingress
+- `PersistentVolume` & `PersistentVolumeClaim`: PostgreSQL storage
+- `Deployments`: PostgreSQL, `guacd`, `guacamole-client`
+- `Services`: For internal communication
+- `Job`: Initializes PostgreSQL schema
+- `Ingress`: Exposes the web interface
 
 ### Steps to Deploy
 
 1. **Review and Adjust `guacamole.yaml`:**
-    * **TLS Secret:** The `guacamole-tls` secret in the `guacamole.yaml` contains base64 encoded `tls.crt` and `tls.key`. **You MUST replace these with your own TLS certificate and key for your domain.**
-        * To generate base64 encoded values:
-
-            ```bash
-            cat your_domain.crt | base64 --wrap=0
-            cat your_domain.key | base64 --wrap=0
-            ```
-
-        * Update the `data` section of the `guacamole-tls` secret with your generated base64 strings.
-    * **Ingress Host:** Update `guacamole.k8s.lab` in the `Ingress` resource to your desired hostname.
-    * **PostgreSQL Password:** The `postgresql-secret` contains a base64 encoded password (`Z3VhY2Ftb2xlCg==` which decodes to `guacamole`). You can change this to a stronger password by base64 encoding your new password.
-    * **PostgreSQL Data Directory:** The `postgresql-pv` points to `hostPath`. Adjust it to your environment. For multi-Nodes cluster use shared storage.
+   - **TLS Secret:** Replace `tls.crt` and `tls.key` in `guacamole-tls` with your own, base64 encoded.
+   - **Ingress Host:** Update `guacamole.k8s.lab` to your domain.
+   - **PostgreSQL Password:** Update the `postgresql-secret` with a strong password (base64 encoded).
+   - **Storage:** Adjust `postgresql-pv` hostPath or configure shared storage for multi-node clusters.
 
 2. **Apply the Manifest:**
-
-    ```bash
-    kubectl apply -f guacamole.yaml
-    ```
+   ```bash
+   kubectl apply -f guacamole.yaml
+   ```
 
 3. **Verify Deployment:**
-    Monitor the deployment status of pods and services:
+   ```bash
+   kubectl get pods -n guacamole
+   kubectl get svc -n guacamole
+   kubectl get ingress -n guacamole
+   kubectl get job -n guacamole
+   ```
+   Ensure `guacamole-init-db` completes successfully.
 
-    ```bash
-    kubectl get pods -n guacamole
-    kubectl get svc -n guacamole
-    kubectl get ingress -n guacamole
-    kubectl get job -n guacamole
-    ```
+---
 
-    Ensure the `guacamole-init-db` job completes successfully.
+## 🌐 Accessing Guacamole
+Once all pods are running and Ingress is configured, access the web UI at:
+```
+https://<your-domain>
+```
 
-### Accessing Guacamole
+Default credentials:
+- **Username:** `guacadmin`
+- **Password:** `guacadmin`
 
-Once all pods are running and the Ingress is configured, you can access Guacamole via the hostname you specified in the Ingress resource (e.g., `https://guacamole.k8s.lab`).
+⚠️ **Change the default password immediately after login.**
 
-The default login credentials after initialization are typically `guacadmin`/`guacadmin`. **It is highly recommended to change these immediately after your first login.**
+---
 
-## Customization
+## 🎛️ Customization
+- **Replicas:** Scale `guacd` and `guacamole-client` deployments.
+- **Versions:** Update container image tags.
+- **Resources:** Add CPU/memory requests and limits.
+- **Authentication:** Extend with LDAP, SAML, OIDC, etc. via Guacamole extensions.
 
-* **Replicas:** Adjust the `replicas` count for `guacd` and `guacamole-client` deployments based on your expected load.
-* **Guacamole Version:** Update the `image` tags for `guacamole/guacamole` and `guacamole/guacd` to a desired version.
-* **PostgreSQL Version:** Update the `image` tag for `postgres` if you wish to use a different PostgreSQL version.
-* **Resource Limits:** Consider adding `resources` limits and requests to your deployments for better resource management.
-* **Authentication:** Guacamole supports various authentication methods (LDAP, SAML, OpenID Connect, etc.). You can configure these by adding appropriate extensions and environment variables to the `guacamole-client` deployment.
+---
+
+## 👤 Author
+**Przemyslaw Pradela**  
+- 💼 GitHub: [@ppradela](https://github.com/ppradela)  
+- ✉️ Email: [przemyslaw.pradela@gmail.com](mailto:przemyslaw.pradela@gmail.com?subject=Apache%20Guacamole%20Kubernetes%20Deployment)  
+- 🔗 LinkedIn: [linkedin.com/in/przemyslaw-pradela](https://www.linkedin.com/in/przemyslaw-pradela)
