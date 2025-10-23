@@ -89,5 +89,5 @@ Default credentials:
 ## 👤 Author
 **Przemyslaw Pradela**  
 - 💼 GitHub: [@ppradela](https://github.com/ppradela)  
-- ✉️ Email: [przemyslaw.pradela@gmail.com](mailto:przemyslaw.pradela@gmail.com?subject=Apache%20Guacamole%20Kubernetes%20Deployment)  
+- ✉️ Email: [przemyslaw.pradela@pradela.ovh](mailto:przemyslaw.pradela@pradela.ovh?subject=Apache%20Guacamole%20Kubernetes%20Deployment)  
 - 🔗 LinkedIn: [linkedin.com/in/przemyslaw-pradela](https://www.linkedin.com/in/przemyslaw-pradela)
