@@ -161,6 +161,9 @@ MIT
 ### Author
 
 **Przemysław Pradela**
-- GitHub: [@ppradela](https://github.com/ppradela)
-- LinkedIn: [linkedin.com/in/przemyslaw-pradela](https://www.linkedin.com/in/przemyslaw-pradela)
-- Website: [pradela.ovh](https://pradela.ovh)
+
+[![GitHub](https://img.shields.io/badge/GitHub-ppradela-181717?logo=github)](https://github.com/ppradela)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Przemysław%20Pradela-0A66C2?logo=linkedin)](https://www.linkedin.com/in/przemyslaw-pradela)
+[![Website](https://img.shields.io/badge/Website-pradela.ovh-4A90D9?logo=globe)](https://pradela.ovh)
+
+Contributions and issue reports welcome.
