@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guacamole-init-db
+  namespace: guacamole
+spec:
+  template:
+    metadata:
+      name: guacamole-init-db
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: init-script-volume
+          emptyDir: {}
+      initContainers:
+        - name: wait-for-postgresql
+          image: busybox
+          command:
+            [
+              "sh",
+              "-c",
+              "until nc -z postgresql.guacamole.svc.cluster.local 5432; do echo waiting for postgresql; sleep 2; done;",
+            ]
+        - name: generate-guacamole-schema
+          image: guacamole/guacamole:1.6.0
+          command: ["sh", "-c"]
+          args:
+            - "/opt/guacamole/bin/initdb.sh --postgresql > /init-scripts/initdb.sql"
+          volumeMounts:
+            - name: init-script-volume
+              mountPath: /init-scripts
+      containers:
+        - name: apply-guacamole-schema
+          image: postgres:16
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: postgresql-password
+            - name: PGHOST
+              value: postgresql.guacamole.svc.cluster.local
+            - name: PGDATABASE
+              value: guacamole
+            - name: PGUSER
+              value: guacamole
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eux;
+              echo "Checking if Guacamole schema already exists...";
+              if psql -h ${PGHOST} -p 5432 -U ${PGUSER} -d ${PGDATABASE} -tAc "SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'guacamole_user';" | grep -q 1; then
+                echo "Guacamole schema (guacamole_user table) already exists. Skipping schema application.";
+                exit 0;
+              else
+                echo "Guacamole schema not found. Applying generated script...";
+                psql -h ${PGHOST} -p 5432 -U ${PGUSER} -d ${PGDATABASE} -f /init-scripts/initdb.sql;
+                echo "Guacamole schema applied successfully.";
+              fi
+          volumeMounts:
+            - name: init-script-volume
+              mountPath: /init-scripts
